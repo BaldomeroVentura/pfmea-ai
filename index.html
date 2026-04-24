@@ -61,7 +61,7 @@ pre{white-space:pre-wrap;background:#0b1020;color:#d1e7ff;border-radius:10px;pad
 <section id="chat" class="hidden">
 <div class="grid"><div class="card"><h3>Chatbot técnico PFMEA</h3>
 <label>Modo IA</label><select id="aiMode"><option value="online">Online IA segura vía backend</option><option value="offline">Offline: coincidencia simple en tablas</option></select>
-<label>Backend URL</label><input id="apiUrl" value="http://127.0.0.1:8000/api/pfmea-advice">
+<label>Backend URL</label><input id="apiUrl" value="/api/pfmea-advice">
 <textarea id="case" rows="8" placeholder="Ej: Tengo un diámetro controlado con micrómetro cada 2 horas, pieza fabricada 2 años, sin reclamaciones, MSA válido"></textarea>
 <button class="primary" onclick="advise()">Analizar con IA / fuentes aprobadas</button> <button class="mini" onclick="testAI()">Test conexión IA</button>
 <p class="small"><b>Estado:</b> <span id="aiStatus">IA no comprobada</span><br>La API key nunca debe estar en este HTML. Debe estar solo en el backend.</p>
@@ -118,10 +118,24 @@ function renderTable(){
 function useRow(r){alert('Valor seleccionado desde '+r.source+'\n'+JSON.stringify(r,null,2).slice(0,900))}
 function explainRow(r){alert((r['TECHNICAL BASIS & SCOPE']||r['criteria']||r['Customer / OEM Impact (AIAG-VDA)']||r['End-User Impact (AIAG-VDA)']||JSON.stringify(r,null,2)).slice(0,1400))}
 function whyNotLower(r){alert((r['WHY NOT LOWER']||r['why_not_lower']||r['evidence_required']||r['RULES & NOTES']||r['WHY IT IS SUFFICIENT TO MANAGE THE RISK']||'No hay campo específico de why_not_lower/evidence_required en esta fila. No bajar puntuación sin evidencia aprobada en tabla.').slice(0,1400))}
+function findRows(text, source){
+  const words=String(text||" ").toLowerCase().match(/[a-zA-Z0-9áéíóúüñ]+/g)||[];
+  const q=new Set(words.filter(w=>w.length>2));
+  return (DB[source]||[]).map(r=>{
+    const rowText=JSON.stringify(r).toLowerCase();
+    let score=0; q.forEach(w=>{ if(rowText.includes(w)) score++; });
+    return {score,row:r};
+  }).filter(x=>x.score>0).sort((a,b)=>b.score-a.score).map(x=>x.row);
+}
+function scoreFrom(r, letter){
+  if(!r) return null;
+  const key=Object.keys(r).find(k=>k.toUpperCase().startsWith(letter+" "));
+  const txt=key ? String(r[key]) : JSON.stringify(r);
+  const m=txt.match(/\b(10|[1-9])\b/);
+  return m ? Number(m[1]) : null;
+}
 async function testAI(){const url=document.getElementById('apiUrl').value.replace('/api/pfmea-advice','/api/health'); fetch(url).then(r=>r.json()).then(j=>{aiStatus.textContent='Backend OK · OpenAI: '+(j.ai_enabled?'activo':'no configurado')}).catch(e=>{aiStatus.textContent='Sin conexión al backend'});}
 function offlineAdvise(){let text=document.getElementById('case').value; let det=findRows(text,'detection')[0], occ=findRows(text,'occurrency')[0], sev=findRows(text,'severity fmea')[0]; let D=scoreFrom(det,'D'), O=scoreFrom(occ,'O'), S=scoreFrom(sev,'S'); if(!D||!O||!S){answer.textContent='Not enough evidence in the approved sources'; return} let ap=getAP(S,O,D), RPN=S*O*D; answer.textContent=`Suggested S: ${S}\nSuggested O: ${O}\nSuggested D: ${D}\nAP: ${ap}\nRPN: ${RPN}\n\nExplanation: matched only against loaded tables.\n\nWhy not lower: do not downgrade without documented evidence.\n\nReferences:\nSeverity: ${JSON.stringify(sev).slice(0,500)}\nOccurrence: ${JSON.stringify(occ).slice(0,500)}\nDetection: ${JSON.stringify(det).slice(0,500)}`;}
-async function advise(){if(document.getElementById('aiMode').value==='offline'){offlineAdvise();return} const caseText=document.getElementById('case').value.trim(); if(!caseText){answer.textContent='Introduce un caso real antes de analizar.';return} answer.textContent='Consultando IA con fuentes aprobadas...'; try{const r=await fetch(document.getElementById('apiUrl').value,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({case_text:caseText})}); const j=await r.json(); if(!r.ok) throw new Error(j.detail||'Backend error'); if(j.not_enough_evidence){answer.textContent='Not enough evidence in the approved sources';return} answer.textContent=`Suggested S: ${j.S??'-'}\nSuggested O: ${j.O??'-'}\nSuggested D: ${j.D??'-'}\nAP: ${j.AP??'-'}\nRPN: ${j.RPN??'-'}\n\nExplanation:\n${j.explanation??''}\n\nWhy not lower:\n${j.why_not_lower??''}\n\nEvidence missing to reduce rating:\n${j.evidence_missing??''}\n\nReferences:\n${(j.sources||[]).map(s=>'- '+s.source+' | '+s.ref+' | '+String(s.excerpt||'').slice(0,300)).join('\n')}`;}catch(e){answer.textContent='No conecta con backend IA. Uso fallback offline.\n\nDetalle: '+e.message+'\n\n---\n'; offlineAdvise();}}
-let D=scoreFrom(det,'D'), O=scoreFrom(occ,'O'), S=scoreFrom(sev,'S'); if(!D||!O||!S){answer.textContent='Not enough evidence in the approved sources'; return}
-let ap=getAP(S,O,D), RPN=S*O*D; answer.textContent=`Suggested S: ${S}\nSuggested O: ${O}\nSuggested D: ${D}\nAP: ${ap}\nRPN: ${RPN}\n\nExplanation: matched only against loaded Severity, Occurrence and Detection tables.\n\nWhy not lower: use the row field “why_not_lower / rules / evidence required” in the matched table. Do not downgrade without documented evidence such as MSA validity, demonstrated process history, effective prevention, reaction plan, or validated automated detection.\n\nReferences:\nSeverity: ${JSON.stringify(sev).slice(0,500)}\nOccurrence: ${JSON.stringify(occ).slice(0,500)}\nDetection: ${JSON.stringify(det).slice(0,500)}`;}
+async function advise(){if(document.getElementById('aiMode').value==='offline'){offlineAdvise();return} const caseText=document.getElementById('case').value.trim(); if(!caseText){answer.textContent='Introduce un caso real antes de analizar.';return} answer.textContent='Consultando IA con fuentes aprobadas...'; try{const r=await fetch(document.getElementById('apiUrl').value,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({case_text:caseText})}); const j=await r.json(); if(!r.ok) throw new Error(j.detail||'Backend error'); if(j.not_enough_evidence){answer.textContent='Not enough evidence in the approved sources';return} answer.textContent=`Suggested S: ${j.S??'-'}\nSuggested O: ${j.O??'-'}\nSuggested D: ${j.D??'-'}\nAP: ${j.AP??'-'}\nRPN: ${j.RPN??'-'}\n\nExplanation:\n${j.explanation??''}\n\nWhy not lower:\n${j.why_not_lower??''}\n\nEvidence missing to reduce rating:\n${j.evidence_missing??''}\n\nReferences:\n${(j.sources||[]).map(s=>'- '+s.source+' | '+s.ref+' | '+String(s.excerpt||'').slice(0,300)).join('\n')}`;}catch(e){answer.textContent='No conecta con backend IA. Uso fallback offline.\n\nDetalle: '+e.message+'\n\n---\n'; offlineAdvise();}}}
 calc(); renderTable();
 </script></body></html>
